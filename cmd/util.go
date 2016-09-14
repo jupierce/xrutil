@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"bytes"
 	"path/filepath"
+	"encoding/json"
+	"io/ioutil"
 )
 
 type Output struct {
@@ -108,11 +110,34 @@ func GetFullObjectNameFromPath( filename string ) string {
 	return strings.Join( []string{ kind, name }, "/" )
 }
 
+func FindAllKindFiles( baseDir string ) ([]string) {
+	var fileList []string
+
+	filepath.Walk( baseDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			Out.Warn( "Unable to walk path [%v]: %v", err, path )
+			return nil
+		}
+		if ! info.Mode().IsRegular() {
+			return nil
+		}
+		fileList = append( fileList, path )
+		return nil
+	})
+
+	return fileList
+}
+
 // Finds all files in a base directory matching a kind/name list.
 // Returns a list of filenames.
 func FindKindNameFiles( baseDir string, list string ) ([]string) {
 	var fileList []string
 	for _, i := range ToKindNameList( list ) {
+
+		if i == "all" {
+			return FindAllKindFiles( baseDir )
+		}
+
 		resPath := filepath.Join( append( []string{ baseDir }, strings.Split( i, "/" )... )... )
 		f, err := os.Open( resPath )
 		if err != nil {
@@ -196,8 +221,17 @@ func (oc *OpenShiftCmd) Exec( args... string) (string, string, error) {
 	return Exec( "oc", args...)
 }
 
+func (oc *OpenShiftCmd) Project() (string, error) {
+	projectName, se, err := oc.Exec("project", "-q")
+	if err != nil {
+		return "", fmt.Errorf( "[%v]: %v", err, se )
+	}
+	return projectName, nil
+}
+
 type GitCmd struct {
 	repoDir string
+	objectDir string
 }
 
 func (git *GitCmd) Exec( args... string) (string, string, error) {
@@ -315,6 +349,9 @@ const (
 	KIND_DC = "deploymentconfigs"
 	KIND_BC = "buildconfigs"
 	KIND_IS = "imagestreams"
+
+	LABEL_REPOSITORY = "openshift.io/repository"
+	LABEL_REPOSITORY_VERSION = "openshift.io/repository/version"
 )
 
 func GetJSONPath( from interface{}, names ...string ) interface{} {
@@ -349,6 +386,66 @@ func SetJSONObj( from interface{}, name string, val interface{} ) {
 	SetJSONPath( from, []string{ name }, val )
 }
 
+func ReadXR( filename string ) (*XR, error) {
+	xrString, err := ioutil.ReadFile( filename )
+
+	if err != nil {
+		return nil, fmt.Errorf( "Unable to read XR file (%v): %v", exportConfig.xrFile, err )
+	}
+
+	var xr XR
+	err = json.Unmarshal(xrString, &xr)
+	if err != nil {
+		return nil, fmt.Errorf( "Error parsing XR file (%v): %v", exportConfig.xrFile, err )
+	}
+
+	if xr.Spec.Type != "git" || xr.Spec.Git.Format != "json" {
+		return nil, fmt.Errorf( "Only git/json ObjectRepositories are presently supported")
+	}
+
+	if xr.Spec.Git.URI == "" {
+		return nil, fmt.Errorf( "No Git URI specified")
+	}
+
+	return &xr, nil
+}
+
+func PrepGitDir( xr *XR ) (*GitCmd, error) {
+	gitDir, err := ioutil.TempDir("", "xrgit")
+
+	if err != nil {
+		return nil, fmt.Errorf( "Error creating temporary directory for git operations: %v", err )
+	}
+
+	git := GitCmd{ repoDir : gitDir }
+
+	Out.Info( "Cloning %v", xr.Spec.Git.URI )
+	_,se,err := git.Exec( "clone", "--", xr.Spec.Git.URI, gitDir )
+
+	if err != nil {
+		defer os.RemoveAll( gitDir )
+		return nil, fmt.Errorf( "Error cloning git repository [%v]: %v", err, se )
+	}
+
+	if xr.Spec.Git.Branch.BaseRef == "" {
+		xr.Spec.Git.Branch.BaseRef = "master"
+	}
+
+	_,se,err = git.Exec( "checkout", xr.Spec.Git.Branch.BaseRef  )
+
+	if err != nil {
+		defer os.RemoveAll( gitDir )
+		return nil, fmt.Errorf( "Error setting up git repository; does not contain baseRef (%v) [%v]: %v", xr.Spec.Git.Branch.BaseRef, err, se )
+	}
+
+	git.objectDir = git.repoDir
+	if xr.Spec.Git.Branch.ContextDir != "" {
+		git.objectDir = filepath.Join( git.repoDir, xr.Spec.Git.Branch.ContextDir )
+		os.MkdirAll( git.objectDir, 0600 )
+	}
+
+	return &git, nil
+}
 
 // Allows a caller to visit each element of a JSON array.
 // The elements the visitor returns will be collected and
@@ -366,6 +463,56 @@ func VisitJSONArrayElements( from interface{}, arrayWalk func( entry interface{}
 	return interface{}(nArr)
 }
 
+func SetLabel( in interface{}, key string, val string ) {
+	metadata := GetJSONPath( in, "metadata" )
+	labels := GetJSONPath( metadata, "labels" )
+	if labels == nil {
+		labels = make( map[string]interface{} )
+	}
+	SetJSONObj( labels, key, val )
+	SetJSONObj( metadata, "labels", labels )
+}
+
+func SetAnnotation( in interface{}, key string, val string ) {
+	metadata := GetJSONPath( in, "metadata" )
+	annotations := GetJSONPath( metadata, "annotations" )
+	if annotations == nil {
+		annotations = make( map[string]interface{} )
+	}
+	SetJSONObj( annotations, key, val )
+	SetJSONObj( metadata, "annotations", annotations )
+}
+
+func RunPatches( xr *XR, baseDir string ) error {
+	for _, patch := range xr.Spec.ExportRules.Transforms.Patches {
+		if patch.Type != "jq" {
+			return fmt.Errorf( "Patch type is not supported: %v", patch.Type )
+		}
+		for _,fileToPatch := range FindKindNameFiles( baseDir, patch.Match ) {
+			so, se, err := Exec( "jq", patch.Patch, fileToPatch )
+			if err != nil {
+				return fmt.Errorf( "Error running jq patch operation on %v [%v]: %v", fileToPatch, err, se )
+			}
+			Out.Info( "Applying patch [%v]: %v", patch.Patch, fileToPatch)
+			// Overwrite the prior file with the patched version
+			err = ioutil.WriteFile( fileToPatch, []byte(so), 0600 )
+			if err != nil {
+				return fmt.Errorf("Error writing patch result on %v: %v", fileToPatch, err )
+			}
+		}
+	}
+	return nil
+}
+
+func IsSelectedByKindNameList( fullResName, list string ) bool {
+	for _, entry := range ToKindNameList( list ) {
+		if entry == "all" || fullResName == entry || strings.HasPrefix( fullResName, "entry"+"/" ) {
+			return true
+		}
+	}
+	return false
+}
+
 type Template struct {
 	Kind string `json:"kind"`
 	Objects []interface{} `json:"objects"`
@@ -379,11 +526,11 @@ type XR struct {
 	} `json:"metadata"`
 	Spec struct {
 		Type string `json:"type"`
+		DefaultVersion string `json:"defaultVersion"`
 		Git struct {
 			URI string `json:"uri"`
 			Format string `json:"format"`
 			Branch struct {
-				DefaultVersion string `json:"defaultVersion"`
 				ContextDir string `json:"contextDir"`
 				Prefix string `json:"prefix"`
 				BaseRef string `json:"baseRef"`
@@ -420,7 +567,7 @@ type XR struct {
 			Exclude string `json:"exclude"`
 			Namespace string `json:"namespace"`
 			Transforms struct {
-				AddNamePrefix string `json:"addNamePrefix"`
+				NamePrefix string `json:"namePrefix"`
 				Patches []struct {
 					Match string `json:"match"`
 					Patch string `json:"patch"`

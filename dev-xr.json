@@ -47,7 +47,7 @@
 
     "importRules" : {
       "include" : "dc, configmaps",
-      "exclude" : "dc/doesntexist",
+      "exclude" : "all",
       "namespace" : "",
       "transforms" : {
         "addNamePrefix" : "",
