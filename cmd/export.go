@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"fmt"
+	"time"
 )
 
 type exportCfg struct {
 	xrFile string
 	version string
+	message string
 }
 
 var cfg exportCfg
@@ -60,12 +62,48 @@ func runExport(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	git := GitCmd{ repoDir : gitDir }
 	Out.Info( "Cloning %v", xr.Spec.Git.URI )
-	Git.Exec( "clone", "--", xr.Spec.Git.URI, gitDir )
+	_,se,err := git.Exec( "clone", "--", xr.Spec.Git.URI )
+
+	if err != nil {
+		Out.Error( "Error cloning git repository [%v]: %v", err, se )
+		os.Exit(1)
+	}
 
 	branchName := xr.Spec.Git.Branch.Prefix + cfg.version
-	Git.Exec( "checkout", branchName )
+	git.Exec( "branch", branchName, "master" )
+	_,se,err = git.Exec( "checkout", branchName )
 
+	if err != nil {
+		Out.Error( "Error checking out git branch (%v) [%v]: %v", branchName, err, se )
+		os.Exit(1)
+	}
+
+	headCommitId,se,err := git.Exec( "rev-parse", "HEAD" ) // Store the current HEAD commit ID
+
+	if err != nil {
+		Out.Error( "Unable to determine HEAD commit id for branch (%v) [%v]: %v", branchName, err, se )
+		os.Exit(1)
+	}
+
+	if xr.Spec.Git.Branch.BaseRef == "" {
+		xr.Spec.Git.Branch.BaseRef = "master"
+	}
+
+	_,se,err = git.Exec( "reset", "--hard", xr.Spec.Git.Branch.BaseRef )
+
+	if err != nil {
+		Out.Error( "Error hard reseting git branch (%v) to (%v) [%v]: %v", branchName, xr.Spec.Git.Branch.BaseRef, err, se )
+		os.Exit(1)
+	}
+
+	_,se,err = git.Exec( "reset", "--soft", headCommitId )
+
+	if err != nil {
+		Out.Error( "Error soft reseting git branch (%v) to (%v) [%v]: %v", branchName, headCommitId, err, se )
+		os.Exit(1)
+	}
 
 	Out.Warn( "Not presently cleaning up gitDir: %v", gitDir)
 	// defer os.RemoveAll( gitDir)
@@ -281,6 +319,24 @@ func runExport(cmd *cobra.Command, args []string) {
 	}
 
 
+	_,se,err = git.Exec( "add", "." )
+
+	if err != nil {
+		Out.Error( "Error adding tracked files to git branch (%v) [%v]: %v", branchName, err, se )
+		os.Exit(1)
+	}
+
+	if cfg.message == "" {
+		cfg.message = fmt.Sprintf( "Version: %v (tag=%v) (date=%v)", cfg.version, generatedTag, time.Now().Format(time.UnixDate) )
+	}
+
+	_,se,err = git.Exec( "commit", "-m", cfg.message )
+
+	if err != nil {
+		Out.Error( "Error adding tracked files to git branch (%v) [%v]: %v", branchName, err, se )
+		os.Exit(1)
+	}
+
 	//so, se, err = OC.Exec("get", "dc")
 	//Out.Out( "%v\n%v\n: %v", so, se, err )
 
@@ -291,6 +347,7 @@ func init() {
 	RootCmd.AddCommand(exportCmd)
 	exportCmd.Flags().StringVar(&cfg.xrFile, "config", "", "Path to ObjectRepository JSON file")
 	exportCmd.Flags().StringVar(&cfg.version, "to", "master", "Version to export")
+	exportCmd.Flags().StringVar(&cfg.version, "message", "", "Message for commits")
 
 	// Here you will define your flags and configuration settings.
 
