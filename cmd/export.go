@@ -15,6 +15,7 @@ type exportCfg struct {
 	xrFile string
 	version string
 	message string
+	overwrite int
 }
 
 var cfg exportCfg
@@ -61,18 +62,52 @@ func runExport(cmd *cobra.Command, args []string) {
 		Out.Error( "Error creating temporary directory for git operations: %v", err )
 		os.Exit(1)
 	}
+	Out.Warn( "Not presently cleaning up gitDir: %v", gitDir)
+	// defer os.RemoveAll( gitDir)
+
+	if cfg.version == "" {
+		cfg.version = xr.Spec.Git.Branch.DefaultVersion
+		if cfg.version == "" {
+			cfg.version = "master"
+		}
+	}
 
 	git := GitCmd{ repoDir : gitDir }
 	Out.Info( "Cloning %v", xr.Spec.Git.URI )
-	_,se,err := git.Exec( "clone", "--", xr.Spec.Git.URI )
+	_,se,err := git.Exec( "clone", "--", xr.Spec.Git.URI, gitDir )
 
 	if err != nil {
 		Out.Error( "Error cloning git repository [%v]: %v", err, se )
 		os.Exit(1)
 	}
 
+
+	if xr.Spec.Git.Branch.BaseRef == "" {
+		xr.Spec.Git.Branch.BaseRef = "master"
+	}
+
+	_,se,err = git.Exec( "checkout", xr.Spec.Git.Branch.BaseRef  )
+
+	if err != nil {
+		Out.Error( "Error setting up git repository; does not contain baseRef (%v) [%v]: %v", xr.Spec.Git.Branch.BaseRef, err, se )
+		os.Exit(1)
+	}
+
 	branchName := xr.Spec.Git.Branch.Prefix + cfg.version
-	git.Exec( "branch", branchName, "master" )
+
+	_,se,err = git.Exec( "checkout", branchName  )
+
+	if err == nil  && cfg.overwrite > 0 {
+		Out.Error( "Branch already exists and --overwrite was not specified (%v) [%v]: %v", branchName, err, se )
+		os.Exit(1)
+	}
+
+	_,se,err = git.Exec( "branch", branchName, xr.Spec.Git.Branch.BaseRef )
+
+	if err != nil {
+		Out.Warn( "Error while creating branch (%v) [%v]: %v", branchName, err, se )
+	}
+
 	_,se,err = git.Exec( "checkout", branchName )
 
 	if err != nil {
@@ -85,10 +120,6 @@ func runExport(cmd *cobra.Command, args []string) {
 	if err != nil {
 		Out.Error( "Unable to determine HEAD commit id for branch (%v) [%v]: %v", branchName, err, se )
 		os.Exit(1)
-	}
-
-	if xr.Spec.Git.Branch.BaseRef == "" {
-		xr.Spec.Git.Branch.BaseRef = "master"
 	}
 
 	_,se,err = git.Exec( "reset", "--hard", xr.Spec.Git.Branch.BaseRef )
@@ -105,12 +136,15 @@ func runExport(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	Out.Warn( "Not presently cleaning up gitDir: %v", gitDir)
-	// defer os.RemoveAll( gitDir)
-
 	projectName, se, err := OC.Exec("project", "-q")
 	if err != nil {
 		Out.Error( "Unable to obtain current project name [%v]: %v", err, se )
+	}
+
+	outputDir := gitDir
+	if xr.Spec.Git.Branch.ContextDir != "" {
+		outputDir = filepath.Join( gitDir, xr.Spec.Git.Branch.ContextDir )
+		os.MkdirAll( outputDir, 0600 )
 	}
 
 	namesToExclude := FindLiveKindNameMap( xr.Spec.ExportRules.Exclude )
@@ -277,7 +311,8 @@ func runExport(cmd *cobra.Command, args []string) {
 
 			Out.Info( "Exporting: %v", fullName )
 
-			kindDir := filepath.Join( gitDir, kind )
+
+			kindDir := filepath.Join( outputDir, kind )
 			err = os.MkdirAll( kindDir, 0600 )
 			if err != nil {
 				Out.Error( "Error creating object directory directory (%v): %v", kindDir, err )
@@ -285,7 +320,7 @@ func runExport(cmd *cobra.Command, args []string) {
 			}
 
 			objectFilePath := filepath.Join( kindDir, name + ".json" )
-			objData, err := json.Marshal( obj )
+			objData, err := json.MarshalIndent( obj, "", "\t" )
 
 			if err != nil {
 				Out.Error( "Error marshalling object data (%v): %v", err, obj )
@@ -302,7 +337,7 @@ func runExport(cmd *cobra.Command, args []string) {
 			Out.Error( "Currently supproted: jq" )
 			os.Exit(1)
 		}
-		for _,fileToPatch := range FindKindNameFiles( gitDir, patch.Match ) {
+		for _,fileToPatch := range FindKindNameFiles( outputDir, patch.Match ) {
 			so, se, err := Exec( "jq", patch.Patch, fileToPatch )
 			if err != nil {
 				Out.Error("Error running jq patch operation on %v [%v]: %v", fileToPatch, err, se )
@@ -333,12 +368,16 @@ func runExport(cmd *cobra.Command, args []string) {
 	_,se,err = git.Exec( "commit", "-m", cfg.message )
 
 	if err != nil {
-		Out.Error( "Error adding tracked files to git branch (%v) [%v]: %v", branchName, err, se )
+		Out.Error( "Error committing files to git branch (%v) [%v]: %v", branchName, err, se )
 		os.Exit(1)
 	}
 
-	//so, se, err = OC.Exec("get", "dc")
-	//Out.Out( "%v\n%v\n: %v", so, se, err )
+	_,se,err = git.Exec( "push", "--set-upstream", "origin", branchName )
+
+	if err != nil {
+		Out.Error( "Error pushing git branch (%v) [%v]: %v", branchName, err, se )
+		os.Exit(1)
+	}
 
 }
 
@@ -346,17 +385,7 @@ func runExport(cmd *cobra.Command, args []string) {
 func init() {
 	RootCmd.AddCommand(exportCmd)
 	exportCmd.Flags().StringVar(&cfg.xrFile, "config", "", "Path to ObjectRepository JSON file")
-	exportCmd.Flags().StringVar(&cfg.version, "to", "master", "Version to export")
-	exportCmd.Flags().StringVar(&cfg.version, "message", "", "Message for commits")
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// exportCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// exportCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-
+	exportCmd.Flags().StringVar(&cfg.version, "to", "", "Version to export")
+	exportCmd.Flags().StringVar(&cfg.message, "message", "", "Message for commits")
+	exportCmd.Flags().CountVar(&cfg.overwrite, "overwrite", "Specify to permit branch overwrites")
 }

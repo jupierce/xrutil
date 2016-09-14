@@ -170,7 +170,6 @@ func FindLiveKindNameMap( kindNameList string ) map[string]struct{} {
 
 
 func Exec( command string, args... string) (string, string, error) {
-	os.Chdir()
 	cmd := exec.Command( command, args...)
 	var stdErrBuff, stdOutBuff bytes.Buffer
 	cmd.Stdout = &stdOutBuff
@@ -204,7 +203,7 @@ type GitCmd struct {
 func (git *GitCmd) Exec( args... string) (string, string, error) {
 	cd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf( "Unable to acquire current directory: %v", err )
+		return "", "", fmt.Errorf( "Unable to acquire current directory: %v", err )
 	}
 	os.Chdir( git.repoDir )
 	defer os.Chdir( cd )
@@ -384,6 +383,8 @@ type XR struct {
 			URI string `json:"uri"`
 			Format string `json:"format"`
 			Branch struct {
+				DefaultVersion string `json:"defaultVersion"`
+				ContextDir string `json:"contextDir"`
 				Prefix string `json:"prefix"`
 				BaseRef string `json:"baseRef"`
 			} `json:"branch"`

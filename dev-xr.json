@@ -11,7 +11,9 @@
       "format" : "json",
       "uri" : "https://github.com/jupierce/xrtest.git",
       "branch" : {
-        "prefix" : "frontend"
+        "prefix" : "frontend_",
+        "contextDir" : "objects",
+        "defaultVersion" : "v1"
       }
     },
 
