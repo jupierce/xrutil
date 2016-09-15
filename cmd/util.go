@@ -19,6 +19,8 @@ type Output struct {
 
 var Out Output
 
+var debug bool
+
 func (o *Output) toWriter( w io.Writer, format string, vals... interface{} ) {
 	fmt.Fprintf( w, format, vals... )
 	if ! strings.HasSuffix( format, "\n" ) {
@@ -28,8 +30,10 @@ func (o *Output) toWriter( w io.Writer, format string, vals... interface{} ) {
 
 
 func (o *Output) Debug( format string, vals... interface{} ) {
-	format = "Debug: " + format
-	o.toWriter( os.Stderr, format, vals... )
+	if debug {
+		format = "Debug: " + format
+		o.toWriter( os.Stderr, format, vals... )
+	}
 }
 
 func (o *Output) Error( format string, vals... interface{} ) {
@@ -115,7 +119,7 @@ func GetFullObjectNameFromPath( filename string ) string {
 	return strings.Join( []string{ kind, name }, "/" )
 }
 
-func FindAllKindFiles( baseDir string ) ([]string) {
+func FindAllKindFiles( xr *XR, baseDir string ) ([]string) {
 	var fileList []string
 
 	filepath.Walk( baseDir, func(path string, info os.FileInfo, err error) error {
@@ -123,7 +127,19 @@ func FindAllKindFiles( baseDir string ) ([]string) {
 			Out.Warn( "Unable to walk path [%v]: %v", err, path )
 			return nil
 		}
+
+		if strings.Contains( path, "/.git/" ) {
+			return nil
+		}
+
 		if ! info.Mode().IsRegular() {
+			return nil
+		}
+
+		// We might have source code to avoid. Preferably, the user
+		// would have used branch.prefix, but alas, avoid a bunch
+		// of warnings.
+		if ! strings.HasSuffix( path, "." + xr.Spec.Git.Format ) {
 			return nil
 		}
 		fileList = append( fileList, path )
@@ -135,16 +151,23 @@ func FindAllKindFiles( baseDir string ) ([]string) {
 
 // Finds all files in a base directory matching a kind/name list.
 // Returns a list of filenames.
-func FindKindNameFiles( baseDir string, list string ) ([]string) {
+func FindKindNameFiles( xr *XR, baseDir string, list string ) ([]string) {
 	var fileList []string
 	for _, i := range ToKindNameList( list ) {
 
 		if i == "all" {
-			return FindAllKindFiles( baseDir )
+			return FindAllKindFiles( xr, baseDir )
 		}
 
-		resPath := filepath.Join( append( []string{ baseDir }, strings.Split( i, "/" )... )... )
-		f, err := os.Open( resPath )
+		components := strings.Split( i, "/" )
+		entryPath := filepath.Join( append( []string{ baseDir }, components... )... )
+
+		// If there are two components to the name (e.g. deploymentconfigs/ruby), we are looking for JSON file
+		if ( len( components ) == 2 ) {
+			entryPath += "." + xr.Spec.Git.Format
+		}
+
+		f, err := os.Open(entryPath)
 		if err != nil {
 			continue
 		}
@@ -156,12 +179,12 @@ func FindKindNameFiles( baseDir string, list string ) ([]string) {
 		}
 
 		if fi.Mode().IsRegular() {
-			fileList = append( fileList, resPath )
+			fileList = append( fileList, entryPath)
 			continue
 		}
 
 		if fi.Mode().IsDir() {
-			filepath.Walk( resPath, func(path string, info os.FileInfo, err error) error {
+			filepath.Walk(entryPath, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					Out.Warn( "Unable to walk path [%v]: %v", err, path )
 					return nil
@@ -411,6 +434,9 @@ func ReadXR( filename string ) (*XR, error) {
 		return nil, fmt.Errorf( "Error parsing XR file (%v): %v", filename, err )
 	}
 
+	xr.Spec.Type = strings.ToLower( xr.Spec.Type )
+	xr.Spec.Git.Format = strings.ToLower( xr.Spec.Git.Format )
+
 	if xr.Spec.Type != "git" || xr.Spec.Git.Format != "json" {
 		return nil, fmt.Errorf( "Only git/json ObjectRepositories are presently supported")
 	}
@@ -509,12 +535,13 @@ func RunPatches( xr *XR, baseDir string ) error {
 		if patch.Type != "jq" {
 			return fmt.Errorf( "Patch type is not supported: %v", patch.Type )
 		}
-		for _,fileToPatch := range FindKindNameFiles( baseDir, patch.Match ) {
+		for _,fileToPatch := range FindKindNameFiles( xr, baseDir, patch.Match ) {
 			so, se, err := Exec( "jq", patch.Patch, fileToPatch )
 			if err != nil {
 				return fmt.Errorf( "Error running jq patch operation on %v [%v]: %v", fileToPatch, err, se )
 			}
-			Out.Info( "Applying patch [%v]: %v", patch.Patch, fileToPatch)
+			fullName := GetFullObjectNameFromPath( fileToPatch )
+			Out.Info( "Applying patch [%v]: %v", patch.Patch, fullName)
 			// Overwrite the prior file with the patched version
 			err = ioutil.WriteFile( fileToPatch, []byte(so), 0600 )
 			if err != nil {

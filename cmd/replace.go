@@ -10,7 +10,7 @@ import (
 
 // replaceCmd represents the replace command
 var replaceCmd = &cobra.Command{
-	Use:   "replace",
+	Use:   "replace <object-repository-json-file>",
 	Short: "Imports a set of object definitions into OpenShift",
 	Run: func(cmd *cobra.Command, args []string) {
 		runReplace(&_replaceConfig, cmd, args )
@@ -29,12 +29,12 @@ type ReplaceConfig struct {
 var _replaceConfig ReplaceConfig
 
 func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
-
-	if config.xrFile == "" {
-		Out.Error( "--config must be specified" )
+	if len( args ) == 0 {
+		Out.Error( "An ObjectRepository JSON definition must be specified" )
 		cmd.Help()
 		os.Exit(1)
 	}
+	config.xrFile = args[0]
 
 	xr, err := ReadXR( config.xrFile )
 	if err != nil {
@@ -103,7 +103,7 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 	}
 
 
-	for _, filename := range FindAllKindFiles( git.objectDir ) {
+	for _, filename := range FindAllKindFiles( xr, git.objectDir) {
 		fullName := GetFullObjectNameFromPath( filename )
 
 		if xr.Spec.ImportRules.Include != "" {
@@ -215,6 +215,7 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 		}
 	}
 
+	Out.Info( "Replace complete.")
 }
 
 func init() {

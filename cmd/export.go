@@ -22,7 +22,7 @@ var _exportConfig ExportConfig
 
 // exportCmd represents the export command
 var exportCmd = &cobra.Command{
-	Use:   "export",
+	Use:   "export <object-repository-json-file>",
 	Short: "Exports a selection of OpenShift oject definitions",
 	Run: func( cmd *cobra.Command, args []string) {
 		runExport( &_exportConfig, cmd, args )
@@ -31,11 +31,13 @@ var exportCmd = &cobra.Command{
 
 func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 
-	if config.xrFile == "" {
-		Out.Error( "--config must be specified" )
+	if len( args ) == 0 {
+		Out.Error( "An ObjectRepository JSON definition must be specified" )
 		cmd.Help()
 		os.Exit(1)
 	}
+	config.xrFile = args[0]
+
 
 	xr, err := ReadXR( config.xrFile )
 	if err != nil {
@@ -68,7 +70,7 @@ func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 	// See if branch name already exists
 	_,se,err := git.Exec( "checkout", branchName  )
 
-	if err == nil  && config.overwrite {
+	if err == nil  && !config.overwrite {
 		Out.Error( "Branch already exists and --overwrite was not specified (%v) [%v]: %v", branchName, err, se )
 		os.Exit(1)
 	}
@@ -192,7 +194,7 @@ func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 				case KIND_IS:
 					fallthrough
 				case KIND_BC:
-					Out.Error( "Selected object contain mutator which is not specified as preserved: %v", fullName )
+					Out.Error( "Selected object contains or is a mutator which is not specified in preserveMutators field: %v", fullName )
 					os.Exit(1)
 				}
 
@@ -343,12 +345,12 @@ func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	Out.Info( "Export complete.")
 }
 
 
 func init() {
 	RootCmd.AddCommand(exportCmd)
-	exportCmd.Flags().StringVar(&_exportConfig.xrFile, "config", "", "Path to ObjectRepository JSON file")
 	exportCmd.Flags().StringVar(&_exportConfig.version, "to", "", "Version to export")
 	exportCmd.Flags().StringVar(&_exportConfig.message, "message", "", "Message for commits")
 	exportCmd.Flags().BoolVar(&_exportConfig.overwrite, "overwrite", false, "Specify to permit branch overwrites")

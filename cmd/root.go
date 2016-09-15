@@ -23,6 +23,7 @@ func Execute() {
 
 func init() {
 	cobra.OnInitialize(initConfig)
+	RootCmd.PersistentFlags().BoolVarP( &debug, "verbose", "v", false, "Output debug level messaging")
 	RootCmd.PersistentFlags().Bool( "preserve-git", false, "Specify to prevent git repository directory cleanup")
 }
 

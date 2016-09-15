@@ -11,13 +11,12 @@
       "format" : "json",
       "uri" : "git@github.com:jupierce/xrtest.git",
       "branch" : {
-        "prefix" : "frontend_",
-        "contextDir" : "objects",
+        "prefix" : "rubyhello_"
       }
     },
 
     "exportRules" : {
-      "include" : "dc, configmaps/c1",
+      "include" : "dc, svc/ruby-hello-world",
       "exclude" : "dc/doesntexist",
       "transforms" : {
         "patches" : [
@@ -35,8 +34,8 @@
         "imageMappings" : [
           {
             "pattern": "*/*/*:*",
-            "newRegistryHost" : "docker.io",
-            "newNamespace" : "jupierce",
+            "setRegistryHost" : "docker.io",
+            "setNamespace" : "jupierce",
             "tagType" : "generated"
           }
         ]
@@ -44,7 +43,7 @@
     },
 
     "importRules" : {
-      "include" : "dc, configmaps",
+      "include" : "dc, svc, configmaps",
       "exclude" : "",
       "namespace" : "",
       "transforms" : {
@@ -63,11 +62,9 @@
         ],
         "imageMappings" : [
           {
-            "pattern": "@/*/*:*",
-            "newRegistryHost" : "docker.io",
-            "newNamespace" : "jupierce",
-            "pull" : true,
-            "tagType" : "generated"
+            "pattern": "~/*/*:*",
+            "setRegistryHost" : "docker.io",
+            "setNamespace" : "jupierce"
           }
         ]
       }

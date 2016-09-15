@@ -9,11 +9,10 @@
 
     "git" : {
       "format" : "json",
-      "uri" : "https://github.com/jupierce/xrtest.git",
+      "uri" : "git@github.com:jupierce/xrtest.git",
       "branch" : {
         "prefix" : "frontend_",
-        "contextDir" : "objects",
-        "defaultVersion" : "v1"
+        "contextDir" : "objects"
       }
     },
 
@@ -35,10 +34,9 @@
         ],
         "imageMappings" : [
           {
-            "pattern": "~/*/*:*",
-            "newRegistryHost" : "docker.io",
-            "newNamespace" : "jupierce",
-            "push" : false,
+            "pattern": "*/*/*:*",
+            "setRegistryHost" : "docker.io",
+            "setNamespace" : "jupierce",
             "tagType" : "generated"
           }
         ]
@@ -47,7 +45,7 @@
 
     "importRules" : {
       "include" : "dc, configmaps",
-      "exclude" : "all",
+      "exclude" : "",
       "namespace" : "",
       "transforms" : {
         "addNamePrefix" : "",
@@ -65,10 +63,10 @@
         ],
         "imageMappings" : [
           {
-            "pattern": "@/*/*:*",
-            "newRegistryHost" : "docker.io",
-            "newNamespace" : "jupierce",
-            "push" : false,
+            "pattern": "~/*/*:*",
+            "setRegistryHost" : "docker.io",
+            "setNamespace" : "jupierce",
+            "pull" : true,
             "tagType" : "generated"
           }
         ]
