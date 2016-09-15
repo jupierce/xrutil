@@ -65,6 +65,7 @@ func pluralizeKind( kind string ) string {
 	case "svc" : kind = "services"
 	case "is" : kind = "imagestreams"
 	case "rc" : kind = "replicationcontrollers"
+	case "po" : kind = "pods"
 	}
 
 	if strings.HasSuffix( kind, "s" ) {
@@ -81,13 +82,17 @@ func NormalizeType( res string ) string {
 	res = strings.TrimSpace( res )
 	res = strings.ToLower( res )
 
-	if res == "" {
-		return ""
+	if res == "" || res == "all" {
+		return res
 	}
 
 	components := strings.Split( res, "/" )
 	components[0] = pluralizeKind( components[0])
-	return strings.Join( components, "/" )
+	if len( components ) > 1 && components[ 1 ] != "" {
+		return strings.Join( components, "/" )
+	} else {
+		return components[ 0 ]
+	}
 }
 
 // Converts an XR kind/name list string to an array of strings
@@ -195,6 +200,7 @@ func FindLiveKindNameMap( kindNameList string ) map[string]struct{} {
 
 
 func Exec( command string, args... string) (string, string, error) {
+	Out.Debug( "Executing (%v): %v", command, strings.Join( args, " " ) )
 	cmd := exec.Command( command, args...)
 	var stdErrBuff, stdOutBuff bytes.Buffer
 	cmd.Stdout = &stdOutBuff
@@ -248,6 +254,12 @@ func mapDockerComponent( existing string, mapping *string ) string {
 	if mapping == nil { // if mapping was set to null or not specified in JSON
 		return existing
 	}
+
+	if *mapping == "~" {
+		Out.Error( "ImageMapping 'set' fields with '~' are not yet supported")
+		os.Exit(1)
+	}
+
 	// Setting to "" in JSON instructs code to drop the image reference component.
 	// Any other value replaces the image component
 	return *mapping
@@ -351,7 +363,7 @@ const (
 	KIND_IS = "imagestreams"
 
 	LABEL_REPOSITORY = "openshift.io/repository"
-	LABEL_REPOSITORY_VERSION = "openshift.io/repository/version"
+	LABEL_REPOSITORY_VERSION = "openshift.io/repository-version"
 )
 
 func GetJSONPath( from interface{}, names ...string ) interface{} {
@@ -390,13 +402,13 @@ func ReadXR( filename string ) (*XR, error) {
 	xrString, err := ioutil.ReadFile( filename )
 
 	if err != nil {
-		return nil, fmt.Errorf( "Unable to read XR file (%v): %v", exportConfig.xrFile, err )
+		return nil, fmt.Errorf( "Unable to read XR file (%v): %v", filename, err )
 	}
 
 	var xr XR
 	err = json.Unmarshal(xrString, &xr)
 	if err != nil {
-		return nil, fmt.Errorf( "Error parsing XR file (%v): %v", exportConfig.xrFile, err )
+		return nil, fmt.Errorf( "Error parsing XR file (%v): %v", filename, err )
 	}
 
 	if xr.Spec.Type != "git" || xr.Spec.Git.Format != "json" {
@@ -415,6 +427,15 @@ func PrepGitDir( xr *XR ) (*GitCmd, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf( "Error creating temporary directory for git operations: %v", err )
+	}
+
+
+	if xr.Spec.Git.HttpProxy != "" {
+		return nil, fmt.Errorf( "Git http proxy is not currently supported. Set HTTP_PROXY environment variable before running instead.")
+	}
+
+	if xr.Spec.Git.HttpsProxy != "" {
+		return nil, fmt.Errorf( "Git https proxy is not currently supported. Set HTTPS_PROXY environment variable before running instead.")
 	}
 
 	git := GitCmd{ repoDir : gitDir }
@@ -441,7 +462,7 @@ func PrepGitDir( xr *XR ) (*GitCmd, error) {
 	git.objectDir = git.repoDir
 	if xr.Spec.Git.Branch.ContextDir != "" {
 		git.objectDir = filepath.Join( git.repoDir, xr.Spec.Git.Branch.ContextDir )
-		os.MkdirAll( git.objectDir, 0600 )
+		os.MkdirAll( git.objectDir, 0700 )
 	}
 
 	return &git, nil
@@ -504,9 +525,9 @@ func RunPatches( xr *XR, baseDir string ) error {
 	return nil
 }
 
-func IsSelectedByKindNameList( fullResName, list string ) bool {
+func IsMatchedByKindNameList( fullResName, list string ) bool {
 	for _, entry := range ToKindNameList( list ) {
-		if entry == "all" || fullResName == entry || strings.HasPrefix( fullResName, "entry"+"/" ) {
+		if entry == "all" || fullResName == entry || strings.HasPrefix( fullResName, entry+"/" ) {
 			return true
 		}
 	}
@@ -530,6 +551,9 @@ type XR struct {
 		Git struct {
 			URI string `json:"uri"`
 			Format string `json:"format"`
+			HttpProxy string `json:"httpProxy"`
+			HttpsProxy string `json:"httpsProxy"`
+			Secret string `json:"string"`
 			Branch struct {
 				ContextDir string `json:"contextDir"`
 				Prefix string `json:"prefix"`
@@ -553,12 +577,13 @@ type XR struct {
 				} `json:"patches"`
 				ImageMappings []struct {
 					Pattern string `json:"pattern"`
-					NewRegistryHost *string `json:"newRegistryHost"`
-					NewNamespace *string `json:"newNamespace"`
-					NewRepository *string `json:"newRepository"`
-					NewTag *string `json:"newTag"`
-					Push bool `json:"push"`
+					SetRegistryHost *string `json:"setRegistryHost"`
+					SetNamespace *string `json:"setNamespace"`
+					SetRepository *string `json:"setRepository"`
+					SetTag *string `json:"setTag"`
+					Push *bool `json:"push"`
 					TagType string `json:"tagType"`
+					Secret string `json:"secret"`
 				} `json:"imageMappings"`
 			} `json:"transforms"`
 		} `json:"exportRules"`
@@ -575,12 +600,10 @@ type XR struct {
 				} `json:"patches"`
 				ImageMappings []struct {
 					Pattern string `json:"pattern"`
-					NewRegistryHost *string `json:"newRegistryHost"`
-					NewNamespace *string `json:"newNamespace"`
-					NewRepository *string `json:"newRepository"`
-					NewTag *string `json:"newTag"`
-					Pull bool `json:"pull"`
-					TagType string `json:"tagType"`
+					SetRegistryHost *string `json:"setRegistryHost"`
+					SetNamespace *string `json:"setNamespace"`
+					SetRepository *string `json:"setRepository"`
+					SetTag *string `json:"setTag"`
 				} `json:"imageMappings"`
 			} `json:"transforms"`
 		} `json:"importRules"`

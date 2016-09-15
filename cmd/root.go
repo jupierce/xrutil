@@ -23,6 +23,7 @@ func Execute() {
 
 func init() {
 	cobra.OnInitialize(initConfig)
+	RootCmd.PersistentFlags().Bool( "preserve-git", false, "Specify to prevent git repository directory cleanup")
 }
 
 // initConfig reads in config file and ENV variables if set.

@@ -18,33 +18,35 @@ type ExportConfig struct {
 	overwrite bool
 }
 
-var exportConfig ExportConfig
+var _exportConfig ExportConfig
 
 // exportCmd represents the export command
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Exports a selection of OpenShift oject definitions",
-	Run: runExport,
+	Run: func( cmd *cobra.Command, args []string) {
+		runExport( &_exportConfig, cmd, args )
+	},
 }
 
-func runExport(cmd *cobra.Command, args []string) {
+func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 
-	if exportConfig.xrFile == "" {
+	if config.xrFile == "" {
 		Out.Error( "--config must be specified" )
 		cmd.Help()
 		os.Exit(1)
 	}
 
-	xr, err := ReadXR( exportConfig.xrFile )
+	xr, err := ReadXR( config.xrFile )
 	if err != nil {
 		Out.Error( "Unable to load configuration: %v", err )
 		os.Exit(1)
 	}
 
-	if exportConfig.version == "" {
-		exportConfig.version = xr.Spec.DefaultVersion
-		if exportConfig.version == "" {
-			exportConfig.version = "master"
+	if config.version == "" {
+		config.version = xr.Spec.DefaultVersion
+		if config.version == "" {
+			config.version = "master"
 		}
 	}
 
@@ -55,23 +57,23 @@ func runExport(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Out.Warn( "Not presently cleaning up gitDir: %v", gitDir)
-	defer os.RemoveAll( git.repoDir )
+	if persist,_ := RootCmd.PersistentFlags().GetBool("preserve-git"); persist {
+		Out.Warn( "The working git directory will not be removed: %v", git.repoDir )
+	} else {
+		defer os.RemoveAll( git.repoDir )
+	}
 
-
-	branchName := xr.Spec.Git.Branch.Prefix + exportConfig.version
+	branchName := xr.Spec.Git.Branch.Prefix + config.version
 
 	// See if branch name already exists
 	_,se,err := git.Exec( "checkout", branchName  )
 
-	if err == nil  && exportConfig.overwrite {
+	if err == nil  && config.overwrite {
 		Out.Error( "Branch already exists and --overwrite was not specified (%v) [%v]: %v", branchName, err, se )
 		os.Exit(1)
 	}
 
-	// See if branch name already exists
 	_,se,err = git.Exec( "branch", branchName, xr.Spec.Git.Branch.BaseRef )
-
 	if err != nil {
 		Out.Warn( "Error while creating branch (%v) [%v]: %v", branchName, err, se )
 	}
@@ -109,10 +111,7 @@ func runExport(cmd *cobra.Command, args []string) {
 		Out.Error( "Unable to obtain current project name: %v", err )
 	}
 
-	namesToExclude := FindLiveKindNameMap( xr.Spec.ExportRules.Exclude )
-	preserveMutators := FindLiveKindNameMap( xr.Spec.ExportRules.Transforms.PreserveMutators )
-	generatedTag := fmt.Sprintf( ":%v_%v", exportConfig.version, makeTimestamp() )
-
+	generatedTag := fmt.Sprintf( ":%v_%v", config.version, makeTimestamp() )
 
 	var selectedNames map[string]struct{} // nil is effectively selecting all
 
@@ -145,7 +144,7 @@ func runExport(cmd *cobra.Command, args []string) {
 
 	include := ToKindNameList(xr.Spec.ExportRules.Include)
 	for _, i := range include {
-		so, se, err := OC.Exec("export", i, "-o=json", "--as-template=x")
+		so, se, err := OC.Exec("export", i, "-o=json", "--exact", "--as-template=x")
 		if err != nil {
 			Out.Warn( "Unable to export object definitions %v [%v]: %v", i, err, se )
 		}
@@ -181,15 +180,12 @@ func runExport(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			_, ok := namesToExclude[ fullName ]
-			if ok  { // The kind/name is to be excluded
+			if IsMatchedByKindNameList( fullName, xr.Spec.ExportRules.Exclude ) {
 				Out.Info( "Excluding: %v", fullName )
 				continue
 			}
 
-			_, preserveMutation := preserveMutators[ fullName ]
-
-			if ! preserveMutation {
+			if ! IsMatchedByKindNameList( fullName, xr.Spec.ExportRules.Transforms.PreserveMutators ) {
 
 				// Disallow build related artifacts from being exported
 				switch kind {
@@ -241,12 +237,12 @@ func runExport(cmd *cobra.Command, args []string) {
 
 								if ok {
 									var newRef string
-									newRef += mapDockerComponentWithSuffix(registryHost, mapping.NewRegistryHost, "/" )
-									newRef += mapDockerComponentWithSuffix(namespace, mapping.NewNamespace, "/" )
-									newRef += mapDockerComponent(repository, mapping.NewRepository )
+									newRef += mapDockerComponentWithSuffix(registryHost, mapping.SetRegistryHost, "/" )
+									newRef += mapDockerComponentWithSuffix(namespace, mapping.SetNamespace, "/" )
+									newRef += mapDockerComponent(repository, mapping.SetRepository )
 									switch mapping.TagType {
 									case "user":
-										newRef += mapDockerTagComponentWithPrefix(tag, mapping.NewTag )
+										newRef += mapDockerTagComponentWithPrefix(tag, mapping.SetTag )
 									case "generated":
 										// Formulate a highly unique tag
 										newRef += generatedTag
@@ -254,13 +250,29 @@ func runExport(cmd *cobra.Command, args []string) {
 										Out.Error( "ImageMapping tagType not presently supported: %v", mapping.TagType )
 										os.Exit(1)
 									}
-									if mapping.TagType == "user" {
 
-									}
 									Out.Info( "Mapping image reference in %v: %q -> %q", fullName, image, newRef )
 									SetJSONObj( entry, "image", newRef )
 
-									Out.Warn( "Tagging and pushing is not yet implemented!!")
+									_,se,err = Exec( "docker", "tag", image, newRef )
+									if err != nil {
+										Out.Error( "Error tagging docker image (%v) as (%v) [%v]: %v", image, newRef, err, se )
+										os.Exit(1)
+									}
+
+									if mapping.Secret != "" {
+										Out.Error( "Docker secrets are not presently supported; log into the necessary docker registries from the command line for push operations" )
+										os.Exit(1)
+									}
+
+									if mapping.Push == nil || *mapping.Push {
+										_,se,err = Exec( "docker", "push", newRef )
+										if err != nil {
+											Out.Error( "Error pushing docker image (%v) as newly tagged (%v) [%v]: %v", image, newRef, err, se )
+											Out.Error( "Make sure you are logged into the destination registry")
+											os.Exit(1)
+										}
+									}
 
 									break // Only perform one mapping. The first one that matches.
 								}
@@ -275,14 +287,14 @@ func runExport(cmd *cobra.Command, args []string) {
 
 
 			kindDir := filepath.Join( git.objectDir, kind )
-			err = os.MkdirAll( kindDir, 0600 )
+			err = os.MkdirAll( kindDir, 0700 )
 			if err != nil {
-				Out.Error( "Error creating object directory directory (%v): %v", kindDir, err )
+				Out.Error( "Error creating object directory (%v): %v", kindDir, err )
 				os.Exit(1)
 			}
 
 			SetLabel( obj, LABEL_REPOSITORY, xr.Metadata.Name )
-			SetLabel( obj, LABEL_REPOSITORY_VERSION, exportConfig.version )
+			SetLabel( obj, LABEL_REPOSITORY_VERSION, config.version )
 
 			objectFilePath := filepath.Join( kindDir, name + ".json" )
 			objData, err := json.MarshalIndent( obj, "", "\t" )
@@ -292,7 +304,11 @@ func runExport(cmd *cobra.Command, args []string) {
 				os.Exit(1)
 			}
 
-			ioutil.WriteFile( objectFilePath, objData, 0600 )
+			err = ioutil.WriteFile( objectFilePath, objData, 0600 )
+			if err != nil {
+				Out.Error( "Error writing object data to file (%v) [%v]", objectFilePath, err )
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -309,11 +325,11 @@ func runExport(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if exportConfig.message == "" {
-		exportConfig.message = fmt.Sprintf( "Version: %v (tag=%v) (date=%v)", exportConfig.version, generatedTag, time.Now().Format(time.UnixDate) )
+	if config.message == "" {
+		config.message = fmt.Sprintf( "Version: %v (tag=%v) (date=%v)", config.version, generatedTag, time.Now().Format(time.UnixDate) )
 	}
 
-	_,se,err = git.Exec( "commit", "-m", exportConfig.message )
+	_,se,err = git.Exec( "commit", "-m", config.message )
 
 	if err != nil {
 		Out.Error( "Error committing files to git branch (%v) [%v]: %v", branchName, err, se )
@@ -332,8 +348,8 @@ func runExport(cmd *cobra.Command, args []string) {
 
 func init() {
 	RootCmd.AddCommand(exportCmd)
-	exportCmd.Flags().StringVar(&exportConfig.xrFile, "config", "", "Path to ObjectRepository JSON file")
-	exportCmd.Flags().StringVar(&exportConfig.version, "to", "", "Version to export")
-	exportCmd.Flags().StringVar(&exportConfig.message, "message", "", "Message for commits")
-	exportCmd.Flags().BoolVar(&exportConfig.overwrite, "overwrite", false, "Specify to permit branch overwrites")
+	exportCmd.Flags().StringVar(&_exportConfig.xrFile, "config", "", "Path to ObjectRepository JSON file")
+	exportCmd.Flags().StringVar(&_exportConfig.version, "to", "", "Version to export")
+	exportCmd.Flags().StringVar(&_exportConfig.message, "message", "", "Message for commits")
+	exportCmd.Flags().BoolVar(&_exportConfig.overwrite, "overwrite", false, "Specify to permit branch overwrites")
 }

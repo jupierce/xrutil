@@ -1,0 +1,78 @@
+{
+  "kind" : "ObjectRepository",
+  "metadata" : {
+    "name" : "to_qe"
+  },
+
+  "spec" : {
+    "type" : "git",
+
+    "git" : {
+      "format" : "json",
+      "uri" : "git@github.com:jupierce/xrtest.git",
+      "branch" : {
+        "prefix" : "frontend_",
+        "contextDir" : "objects",
+      }
+    },
+
+    "exportRules" : {
+      "include" : "dc, configmaps/c1",
+      "exclude" : "dc/doesntexist",
+      "transforms" : {
+        "patches" : [
+          {
+            "match": "deploymentconfigs",
+            "patch" : ".spec.strategy.type=\"Custom\"",
+            "type" : "jq"
+          },
+          {
+            "match": "deploymentconfigs",
+            "patch" : ".spec.strategy.type=\"Rolling\"",
+            "type" : "jq"
+          }
+        ],
+        "imageMappings" : [
+          {
+            "pattern": "*/*/*:*",
+            "newRegistryHost" : "docker.io",
+            "newNamespace" : "jupierce",
+            "tagType" : "generated"
+          }
+        ]
+      }
+    },
+
+    "importRules" : {
+      "include" : "dc, configmaps",
+      "exclude" : "",
+      "namespace" : "",
+      "transforms" : {
+        "addNamePrefix" : "",
+        "patches" : [
+          {
+            "match": "deploymentconfigs",
+            "patch" : ".spec.strategy.type=\"Custom\"",
+            "type" : "jq"
+          },
+          {
+            "match": "deploymentconfigs",
+            "patch" : ".spec.strategy.type=\"Rolling\"",
+            "type" : "jq"
+          }
+        ],
+        "imageMappings" : [
+          {
+            "pattern": "@/*/*:*",
+            "newRegistryHost" : "docker.io",
+            "newNamespace" : "jupierce",
+            "pull" : true,
+            "tagType" : "generated"
+          }
+        ]
+      }
+    }
+
+
+  }
+}
