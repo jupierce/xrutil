@@ -11,12 +11,12 @@
       "format" : "json",
       "uri" : "git@github.com:jupierce/xrtest.git",
       "branch" : {
-        "prefix" : "rubyhello_"
+        "prefix" : "ruby-hello-world_"
       }
     },
 
     "exportRules" : {
-      "include" : "dc, svc/ruby-hello-world",
+      "include" : "dc, svc/ruby-hello-world, secrets/test-secret",
       "exclude" : "dc/doesntexist",
       "transforms" : {
         "patches" : [
@@ -43,7 +43,7 @@
     },
 
     "importRules" : {
-      "include" : "dc, svc, configmaps",
+      "include" : "dc, svc, configmaps, secrets",
       "exclude" : "",
       "namespace" : "",
       "transforms" : {

@@ -146,7 +146,13 @@ func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 
 	include := ToKindNameList(xr.Spec.ExportRules.Include)
 	for _, i := range include {
-		so, se, err := OC.Exec("export", i, "-o=json", "--exact", "--as-template=x")
+
+		exactFlag := "--exact=false"
+		if strings.HasPrefix( i, "secrets/" ) || i == "secrets" {
+			exactFlag = "--exact=true"
+		}
+
+		so, se, err := OC.Exec("export", i, "-o=json", exactFlag, "--as-template=x")
 		if err != nil {
 			Out.Warn( "Unable to export object definitions %v [%v]: %v", i, err, se )
 		}
@@ -165,6 +171,7 @@ func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 
 
 			metadata := obj["metadata"].(map[string]interface{})
+			delete( metadata, "namespace" ) // secrets are presently exported "exact", so delete namespace
 			name := metadata["name"].(string)
 
 			if name == "" {
@@ -268,6 +275,7 @@ func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 									}
 
 									if mapping.Push == nil || *mapping.Push {
+										Out.Info( "Pushing docker image: %v", newRef )
 										_,se,err = Exec( "docker", "push", newRef )
 										if err != nil {
 											Out.Error( "Error pushing docker image (%v) as newly tagged (%v) [%v]: %v", image, newRef, err, se )
@@ -345,7 +353,7 @@ func runExport(config *ExportConfig, cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	Out.Info( "Export complete.")
+	Out.Info( "Operation complete.")
 }
 
 

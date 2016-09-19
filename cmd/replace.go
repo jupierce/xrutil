@@ -91,7 +91,7 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 		OC.Exec( "delete", "all", setNS,  "-l", LABEL_REPOSITORY + "=" + xr.Metadata.Name )
 	}
 
-	namePrefix := xr.Spec.ImportRules.Transforms.NamePrefix
+	namePrefix := xr.Spec.ImportRules.Transforms.NamePrefix.NamePrefixDefault
 	if config.namePrefix != "" {
 		namePrefix = config.namePrefix
 	}
@@ -103,8 +103,9 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 	}
 
 
-	for _, filename := range FindAllKindFiles( xr, git.objectDir) {
-		fullName := GetFullObjectNameFromPath( filename )
+	filesToImport := FindAllKindFiles( xr, git.objectDir )
+
+	for fullName, filename := range filesToImport {
 
 		if xr.Spec.ImportRules.Include != "" {
 			if ! IsMatchedByKindNameList( fullName, xr.Spec.ImportRules.Include ) {
@@ -133,6 +134,68 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 		}
 
 		if namePrefix != "" {
+
+			SpiderObject( obj, func( kind string, key string, m map[string]interface{} ) {
+
+				Out.Debug( "\n\nSpider: %v => %v", key, m)
+
+				if key == "metadata" {
+					// Because secrets are exported with exact, we need to delete the namespace
+					_, ok := m[ "namespace" ]
+					if ok {
+						delete( m, "namespace" )
+					}
+				}
+				if key == "labels" || key == "selector" {
+					for kt,vt := range xr.Spec.ImportRules.Transforms.NamePrefix.Labels {
+						v,ok := m[ kt ]
+						vs := v.(string)
+						if ok && vt == "" || vs == vt {
+							m[ kt ] = namePrefix + vs
+						}
+					}
+					v, ok := m[ "deploymentconfig" ]
+					if ok {
+						// v is the name of a deployment config. See if we are replacing it.
+						vs := v.(string)
+						_, ok := filesToImport[ KIND_DC + "/" + vs ]
+						if ok {
+							m[ "deploymentconfig" ] = namePrefix + vs
+						}
+					}
+				}
+				if key == "configMapKeyRef" {
+					v, ok := m[ "name"]
+					if ok {
+						vs := v.(string)
+						_, ok := filesToImport[ KIND_CONFIGMAP + "/" + vs ]
+						if ok {
+							m[ "name" ] = namePrefix + vs
+						}
+					}
+				}
+				if key == "configMap" {
+					v, ok := m[ "name"]
+					if ok {
+						vs := v.(string)
+						_, ok := filesToImport[ KIND_CONFIGMAP + "/" + vs ]
+						if ok {
+							m[ "name" ] = namePrefix + vs
+						}
+					}
+				}
+				if key == "secret" {
+					v, ok := m[ "secretName"]
+					if ok {
+						vs := v.(string)
+						_, ok := filesToImport[ KIND_SECRET + "/" + vs ]
+						if ok {
+							m[ "secretName" ] = namePrefix + vs
+						}
+					}
+				}
+			})
+
 			newName := namePrefix + GetJSONPath( obj, "metadata", "name" ).(string)
 			SetJSONPath( obj, []string{ "metadata", "name" }, newName )
 			// TODO: need to check for any references to objects which need to change
@@ -154,6 +217,7 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 		}
 
 		kind := GetJSONPath( obj, "kind" ).(string)
+		name := GetJSONPath( obj, "metadata", "name" ).(string)
 
 		// Rewrite image references
 		if kind == KIND_DC || kind == KIND_RC {
@@ -206,7 +270,7 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 
-		Out.Info( "Replacing %v", fullName )
+		Out.Info( "Replacing %v with source file: %v", name, fullName )
 		_,se,err = OC.Exec( "replace", setNS, "--cascade=true", "--force", "-f", filename )
 
 		if err != nil {
@@ -215,7 +279,7 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 		}
 	}
 
-	Out.Info( "Replace complete.")
+	Out.Info( "Operation complete.")
 }
 
 func init() {

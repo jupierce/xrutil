@@ -119,8 +119,8 @@ func GetFullObjectNameFromPath( filename string ) string {
 	return strings.Join( []string{ kind, name }, "/" )
 }
 
-func FindAllKindFiles( xr *XR, baseDir string ) ([]string) {
-	var fileList []string
+func FindAllKindFiles( xr *XR, baseDir string ) (map[string]string) {
+	m := make(map[string]string)
 
 	filepath.Walk( baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -142,17 +142,18 @@ func FindAllKindFiles( xr *XR, baseDir string ) ([]string) {
 		if ! strings.HasSuffix( path, "." + xr.Spec.Git.Format ) {
 			return nil
 		}
-		fileList = append( fileList, path )
+		fullName := GetFullObjectNameFromPath( path )
+		m[ fullName ] = path
 		return nil
 	})
 
-	return fileList
+	return m
 }
 
 // Finds all files in a base directory matching a kind/name list.
-// Returns a list of filenames.
-func FindKindNameFiles( xr *XR, baseDir string, list string ) ([]string) {
-	var fileList []string
+// Returns a map of kind/name => filename
+func FindKindNameFiles( xr *XR, baseDir string, list string ) (map[string]string) {
+	m := make(map[string]string)
 	for _, i := range ToKindNameList( list ) {
 
 		if i == "all" {
@@ -179,7 +180,8 @@ func FindKindNameFiles( xr *XR, baseDir string, list string ) ([]string) {
 		}
 
 		if fi.Mode().IsRegular() {
-			fileList = append( fileList, entryPath)
+			fullName := GetFullObjectNameFromPath( entryPath )
+			m[ fullName ] = entryPath
 			continue
 		}
 
@@ -192,12 +194,13 @@ func FindKindNameFiles( xr *XR, baseDir string, list string ) ([]string) {
 				if ! info.Mode().IsRegular() {
 					return nil
 				}
-				fileList = append( fileList, path )
+				fullName := GetFullObjectNameFromPath( path )
+				m[ fullName ] = path
 				return nil
 			})
 		}
 	}
-	return fileList
+	return m
 }
 
 // Looks for any live objects matching entries in a kind[/name] list.
@@ -384,12 +387,16 @@ const (
 	KIND_DC = "deploymentconfigs"
 	KIND_BC = "buildconfigs"
 	KIND_IS = "imagestreams"
+	KIND_CONFIGMAP = "configmaps"
+	KIND_SECRET = "secrets"
+	KIND_PV = "persistentvolumes"
+	KIND_PVC = "persistentvolumeclaims"
 
 	LABEL_REPOSITORY = "openshift.io/repository"
 	LABEL_REPOSITORY_VERSION = "openshift.io/repository-version"
 )
 
-func GetJSONPath( from interface{}, names ...string ) interface{} {
+func  GetJSONPath( from interface{}, names ...string ) interface{} {
 	for _, name := range names {
 		if from == nil {
 			return nil
@@ -510,6 +517,35 @@ func VisitJSONArrayElements( from interface{}, arrayWalk func( entry interface{}
 	return interface{}(nArr)
 }
 
+func spiderInner( kind string, from string, at interface{}, walk func( kind string, key string, m map[string]interface{} ) ) {
+
+	// If we are spidering an array
+	arr, ok := at.([]interface{})
+	if ok {
+		for i := range arr {
+			spiderInner( kind, from, arr[i], walk )
+		}
+		return
+	}
+
+
+	// If we are spidering a map
+	mp, ok := at.(map[string]interface{})
+	if ok {
+		walk( kind, from, mp )
+		for key, obj := range mp  {
+			spiderInner( kind, key, obj, walk )
+		}
+	}
+}
+
+func SpiderObject( from interface{}, walk func( kind string, key string, m map[string]interface{} ) ) {
+	obj := from.(map[string]interface{})
+	kind := pluralizeKind( GetJSONPath( obj, "kind" ).(string) )
+	spiderInner( kind, "", obj, walk )
+}
+
+
 func SetLabel( in interface{}, key string, val string ) {
 	metadata := GetJSONPath( in, "metadata" )
 	labels := GetJSONPath( metadata, "labels" )
@@ -619,7 +655,10 @@ type XR struct {
 			Exclude string `json:"exclude"`
 			Namespace string `json:"namespace"`
 			Transforms struct {
-				NamePrefix string `json:"namePrefix"`
+				NamePrefix struct {
+					NamePrefixDefault string `json:default`
+					Labels map[string]string `json:"labels"`
+			   	} `json:"namePrefix"`
 				Patches []struct {
 					Match string `json:"match"`
 					Patch string `json:"patch"`
