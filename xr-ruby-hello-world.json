@@ -16,21 +16,10 @@
     },
 
     "exportRules" : {
-      "include" : "dc, svc/ruby-hello-world, secrets/test-secret",
+      "include" : "dc, svc/ruby-hello-world",
       "exclude" : "dc/doesntexist",
-      "transforms" : {
-        "patches" : [
-          {
-            "match": "deploymentconfigs",
-            "patch" : ".spec.strategy.type=\"Custom\"",
-            "type" : "jq"
-          },
-          {
-            "match": "deploymentconfigs",
-            "patch" : ".spec.strategy.type=\"Rolling\"",
-            "type" : "jq"
-          }
-        ],
+
+      "transforms": {
         "imageMappings" : [
           {
             "pattern": "*/*/*:*",
@@ -43,11 +32,20 @@
     },
 
     "importRules" : {
+
       "include" : "dc, svc, configmaps, secrets",
       "exclude" : "",
+
       "namespace" : "",
+
+
       "transforms" : {
-        "addNamePrefix" : "",
+        "namePrefix" : {
+          "default": "",
+          "labels" : {
+            "mylabel" : "origvalue2"
+          }
+        },
         "patches" : [
           {
             "match": "deploymentconfigs",

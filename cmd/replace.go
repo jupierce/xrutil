@@ -149,9 +149,11 @@ func runReplace(config *ReplaceConfig, cmd *cobra.Command, args []string) {
 				if key == "labels" || key == "selector" {
 					for kt,vt := range xr.Spec.ImportRules.Transforms.NamePrefix.Labels {
 						v,ok := m[ kt ]
-						vs := v.(string)
-						if ok && vt == "" || vs == vt {
-							m[ kt ] = namePrefix + vs
+						if ok {
+							vs := v.(string)
+							if vt == "" || vs == vt {
+								m[ kt ] = namePrefix + vs
+							}
 						}
 					}
 					v, ok := m[ "deploymentconfig" ]
